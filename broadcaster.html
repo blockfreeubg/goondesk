@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>PC Stream Broadcaster + Remote Control</title>
+</head>
+<body>
+  <h1>🖥️ PC Stream Broadcaster</h1>
+  <button id="startBtn">Start Sharing Screen</button>
+  <p>Status: <span id="status">idle</span></p>
+  <div id="previewContainer"></div>
+
+  <script src="https://unpkg.com/peerjs@1.5.1/dist/peerjs.min.js"></script>
+  <script>
+    const PEER_ID = new URLSearchParams(location.search).get('id') || 'duderucoolpc123';
+    const statusEl = document.getElementById('status');
+    let localStream = null;
+    let peer = null;
+    let ws = null;
+
+    function connectWebSocket() {
+      ws = new WebSocket('ws://localhost:8765');
+      ws.onopen = () => console.log('[Broadcaster] Connected to input server');
+      ws.onerror = (e) => console.error('[Broadcaster] WebSocket error', e);
+      ws.onclose = () => {
+        console.log('[Broadcaster] WebSocket closed, retrying in 2s');
+        setTimeout(connectWebSocket, 2000);
+      };
+    }
+    connectWebSocket();
+
+    function log(msg) {
+      console.log('[Broadcaster]', msg);
+    }
+
+    document.getElementById('startBtn').addEventListener('click', async () => {
+      try {
+        // Request high resolution and frame rate
+        localStream = await navigator.mediaDevices.getDisplayMedia({
+          video: {
+            width: { ideal: 1920, max: 3840 },
+            height: { ideal: 1080, max: 2160 },
+            frameRate: { ideal: 60, max: 120 }
+          },
+          audio: false
+        });
+
+        const videoTrack = localStream.getVideoTracks()[0];
+        if (videoTrack) {
+          // Use 'detail' to prioritize sharpness over motion smoothness (fixes 144p)
+          videoTrack.contentHint = 'detail';
+          log('Video track settings: ' + JSON.stringify(videoTrack.getSettings()));
+        }
+
+        log('Screen capture started');
+        log('Tracks: ' + localStream.getTracks().map(t => `${t.kind}:${t.readyState}`));
+
+        const container = document.getElementById('previewContainer');
+        container.innerHTML = '';
+        const video = document.createElement('video');
+        video.srcObject = localStream;
+        video.autoplay = true;
+        video.muted = true;
+        video.playsInline = true;
+        video.style.width = '300px';
+        container.appendChild(video);
+
+        statusEl.textContent = 'Screen captured. Initializing peer...';
+        initPeer();
+      } catch (err) {
+        log('Screen capture failed: ' + err.message);
+        statusEl.textContent = 'Error: ' + err.message;
+      }
+    });
+
+    function initPeer() {
+      peer = new Peer(PEER_ID, {
+        config: {
+          iceServers: [
+            { urls: 'stun:stun.l.google.com:19302' },
+            { urls: 'turn:openrelay.metered.ca:80', username: 'openrelayproject', credential: 'openrelayproject' },
+            { urls: 'turn:openrelay.metered.ca:443', username: 'openrelayproject', credential: 'openrelayproject' }
+          ]
+        }
+      });
+
+      peer.on('open', (id) => {
+        log('Peer ready, ID: ' + id);
+        statusEl.textContent = `✅ Peer ready! ID: ${id} — waiting for viewers...`;
+      });
+
+      peer.on('call', (call) => {
+        log('📞 Incoming media call');
+        statusEl.textContent = 'Incoming call, answering...';
+
+        const videoTrack = localStream?.getVideoTracks()[0];
+        if (!videoTrack || videoTrack.readyState !== 'live') {
+          log('❌ ERROR: No live video track!');
+          statusEl.textContent = '❌ No screen capture active. Click Start Sharing Screen first.';
+          call.close();
+          return;
+        }
+
+        call.answer(new MediaStream([videoTrack]));
+
+        // Modify SDP / set bitrate after answer
+        call.on('stream', () => {
+          // This event fires on the caller side; broadcaster doesn't get it.
+        });
+
+        // After answering, tweak sender parameters for higher bitrate
+        call.peerConnection.addEventListener('connectionstatechange', () => {
+          if (call.peerConnection.connectionState === 'connected') {
+            const sender = call.peerConnection.getSenders().find(s => s.track === videoTrack);
+            if (sender) {
+              const params = sender.getParameters();
+              if (!params.encodings) params.encodings = [{}];
+              params.encodings[0].maxBitrate = 10000000; // 10 Mbps
+              params.encodings[0].minBitrate = 2000000;  // 2 Mbps
+              params.encodings[0].networkPriority = 'high';
+              sender.setParameters(params).catch(err => log('Could not set bitrate: ' + err));
+              log('Bitrate parameters set');
+            }
+          }
+        });
+
+        call.on('close', () => {
+          log('Viewer disconnected (media)');
+          statusEl.textContent = 'Viewer disconnected';
+        });
+        call.on('error', (err) => {
+          log('Media call error: ' + err.message);
+        });
+      });
+
+      // Data connection for remote control (unreliable to reduce latency)
+      peer.on('connection', (conn) => {
+        log('🔗 Data connection established from viewer');
+        statusEl.textContent = 'Viewer connected (remote control ready)';
+
+        conn.on('data', (data) => {
+          log('Received data: ' + JSON.stringify(data));
+          if (ws && ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify(data));
+          } else {
+            log('WebSocket not open, dropping data');
+          }
+        });
+
+        conn.on('close', () => {
+          log('Data connection closed');
+          statusEl.textContent = 'Viewer data connection closed';
+        });
+
+        conn.on('error', (err) => {
+          log('Data connection error: ' + err.message);
+        });
+      });
+
+      peer.on('error', (err) => {
+        log('Peer error: ' + err.message);
+        statusEl.textContent = '❌ Peer error: ' + err.message;
+      });
+    }
+  </script>
+</body>
+</html>

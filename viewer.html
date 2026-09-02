@@ -1,0 +1,321 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>PC Stream Viewer + Remote Control (Gaming Optimized)</title>
+  <style>
+    html, body {
+      margin: 0;
+      padding: 0;
+      height: 100%;
+      overflow: hidden;
+      background: #000;
+    }
+    #videoContainer {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: #000;
+    }
+    #remoteVideo {
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
+      background: #000;
+      cursor: crosshair;
+      outline: none;
+    }
+
+    /* Small button to toggle controls – top left */
+    #toggleControlsBtn {
+      position: fixed;
+      top: 10px;
+      left: 10px;
+      z-index: 20;
+      background: rgba(0,0,0,0.6);
+      color: white;
+      border: 1px solid #555;
+      border-radius: 4px;
+      padding: 5px 10px;
+      font-size: 16px;
+      cursor: pointer;
+      user-select: none;
+    }
+    #toggleControlsBtn:hover {
+      background: rgba(30,30,30,0.8);
+    }
+
+    /* Control panel – hidden by default */
+    .control-panel {
+      position: fixed;
+      bottom: 10px;
+      left: 50%;
+      transform: translateX(-50%);
+      display: none;               /* hidden initially */
+      gap: 10px;
+      z-index: 10;
+      background: rgba(0,0,0,0.7);
+      padding: 8px 12px;
+      border-radius: 8px;
+    }
+    .control-panel.active {
+      display: flex;
+    }
+
+    button {
+      padding: 8px 16px;
+      cursor: pointer;
+      background: #333;
+      color: white;
+      border: none;
+      border-radius: 4px;
+    }
+    button:hover {
+      background: #555;
+    }
+    #status {
+      color: white;
+      font-family: Arial, sans-serif;
+      font-weight: bold;
+      background: rgba(0,0,0,0.5);
+      padding: 5px 10px;
+      border-radius: 4px;
+      pointer-events: none;
+    }
+  </style>
+</head>
+<body>
+  <!-- Toggle button always visible -->
+  <div id="toggleControlsBtn">☰ Controls</div>
+
+  <div id="videoContainer">
+    <video id="remoteVideo" autoplay playsinline muted></video>
+  </div>
+
+  <div class="control-panel" id="controlPanel">
+    <button id="connectBtn">🔗 Connect</button>
+    <button id="playBtn">▶ Play</button>
+    <button id="enableCtrlBtn">🖱️ Enable Remote Control</button>
+    <button id="fullscreenBtn">⛶ Fullscreen</button>
+    <span id="status">not connected</span>
+  </div>
+
+  <script src="https://unpkg.com/peerjs@1.5.1/dist/peerjs.min.js"></script>
+  <script>
+    // DOM elements
+    const PEER_ID = new URLSearchParams(location.search).get('id') || 'duderucoolpc123';
+    const statusEl = document.getElementById('status');
+    const videoEl = document.getElementById('remoteVideo');
+    const container = document.getElementById('videoContainer');
+    const connectBtn = document.getElementById('connectBtn');
+    const playBtn = document.getElementById('playBtn');
+    const enableCtrlBtn = document.getElementById('enableCtrlBtn');
+    const fullscreenBtn = document.getElementById('fullscreenBtn');
+    const toggleControlsBtn = document.getElementById('toggleControlsBtn');
+    const controlPanel = document.getElementById('controlPanel');
+
+    let peer = null;
+    let call = null;
+    let dataConn = null;
+    let isControlling = false;
+    let dataConnReady = false;
+    let pointerLocked = false;
+
+    // Toggle controls visibility
+    toggleControlsBtn.addEventListener('click', () => {
+      controlPanel.classList.toggle('active');
+    });
+
+    function log(msg) {
+      console.log('[Viewer]', msg);
+    }
+
+    function createDummyStream() {
+      const canvas = document.createElement('canvas');
+      canvas.width = 1; canvas.height = 1;
+      canvas.getContext('2d').fillRect(0,0,1,1);
+      return canvas.captureStream(1);
+    }
+    const dummyStream = createDummyStream();
+
+    function initPeer() {
+      peer = new Peer({
+        config: {
+          iceServers: [
+            { urls: 'stun:stun.l.google.com:19302' },
+            { urls: 'turn:openrelay.metered.ca:80', username: 'openrelayproject', credential: 'openrelayproject' },
+            { urls: 'turn:openrelay.metered.ca:443', username: 'openrelayproject', credential: 'openrelayproject' }
+          ],
+          bundlePolicy: 'max-bundle'
+        }
+      });
+
+      peer.on('open', (id) => {
+        log('Peer ready, my ID: ' + id);
+        statusEl.textContent = 'Viewer ready – click Connect';
+      });
+
+      peer.on('error', (err) => {
+        log('Peer error: ' + err.message);
+        statusEl.textContent = 'Peer error: ' + err.message;
+      });
+    }
+
+    function connect() {
+      if (!peer) initPeer();
+      if (!peer.open) {
+        statusEl.textContent = 'Peer not ready yet, waiting...';
+        peer.once('open', () => connect());
+        return;
+      }
+
+      statusEl.textContent = `Calling ${PEER_ID}...`;
+      log('Calling ' + PEER_ID);
+
+      if (call) call.close();
+      if (dataConn) dataConn.close();
+
+      call = peer.call(PEER_ID, dummyStream);
+
+      call.on('stream', (remoteStream) => {
+        log('✅ Received remote stream');
+        statusEl.textContent = 'Connected!';
+        videoEl.srcObject = remoteStream;
+        videoEl.load();
+        videoEl.play().catch(err => {
+          log('Autoplay failed: ' + err.message);
+          statusEl.textContent = 'Click ▶ Play to start';
+        });
+        if ('playoutDelayHint' in videoEl) {
+          videoEl.playoutDelayHint = 0.1;
+        }
+      });
+
+      call.on('close', () => {
+        log('Media call closed');
+        statusEl.textContent = 'Connection closed';
+        isControlling = false;
+      });
+
+      call.on('error', (err) => {
+        log('Media call error: ' + err.message);
+        statusEl.textContent = 'Call error: ' + err.message;
+      });
+
+      log('Connecting data channel (unreliable)...');
+      dataConn = peer.connect(PEER_ID, { reliable: false, ordered: false, maxRetransmits: 0 });
+
+      dataConn.on('open', () => {
+        log('🔗 Data connection open');
+        dataConnReady = true;
+        statusEl.textContent = 'Connected (remote control ready)';
+      });
+
+      dataConn.on('data', (data) => {
+        log('Received data from broadcaster: ' + data);
+      });
+
+      dataConn.on('close', () => {
+        log('Data connection closed');
+        dataConnReady = false;
+        isControlling = false;
+      });
+
+      dataConn.on('error', (err) => {
+        log('Data connection error: ' + err.message);
+        statusEl.textContent = 'Data connection error';
+      });
+    }
+
+    // Remote control functions
+    function sendData(data) {
+      if (dataConn && dataConnReady) {
+        dataConn.send(data);
+      } else {
+        log('Data connection not ready, cannot send');
+      }
+    }
+
+    enableCtrlBtn.addEventListener('click', () => {
+      if (!dataConnReady) {
+        alert('Data connection not ready yet.');
+        return;
+      }
+      videoEl.focus();
+      isControlling = true;
+      statusEl.textContent = 'Remote control ACTIVE – click video to lock mouse';
+      log('Remote control enabled');
+    });
+
+    videoEl.addEventListener('click', () => {
+      if (isControlling && !pointerLocked) {
+        videoEl.requestPointerLock();
+      }
+    });
+
+    document.addEventListener('pointerlockchange', () => {
+      pointerLocked = (document.pointerLockElement === videoEl);
+      statusEl.textContent = pointerLocked ? 'Mouse locked – move to control' : 'Remote control active (click video to lock)';
+    });
+
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && isControlling) {
+        isControlling = false;
+        statusEl.textContent = 'Remote control disabled';
+        log('Remote control disabled');
+      }
+    });
+
+    videoEl.addEventListener('mousemove', (e) => {
+      if (!isControlling || !pointerLocked) return;
+      sendData({ type: 'mousemove', dx: e.movementX, dy: e.movementY });
+    });
+
+    videoEl.addEventListener('mousedown', (e) => {
+      if (!isControlling || !pointerLocked) return;
+      e.preventDefault();
+      sendData({ type: 'mousedown', button: e.button });
+    });
+    videoEl.addEventListener('mouseup', (e) => {
+      if (!isControlling || !pointerLocked) return;
+      e.preventDefault();
+      sendData({ type: 'mouseup', button: e.button });
+    });
+    videoEl.addEventListener('contextmenu', (e) => {
+      if (isControlling) e.preventDefault();
+    });
+
+    document.addEventListener('keydown', (e) => {
+      if (!isControlling) return;
+      e.preventDefault();
+      sendData({ type: 'keydown', key: e.key, code: e.code });
+    });
+    document.addEventListener('keyup', (e) => {
+      if (!isControlling) return;
+      e.preventDefault();
+      sendData({ type: 'keyup', key: e.key, code: e.code });
+    });
+
+    fullscreenBtn.addEventListener('click', () => {
+      if (!document.fullscreenElement) {
+        container.requestFullscreen().catch(err => log('Fullscreen error: ' + err.message));
+      } else {
+        document.exitFullscreen();
+      }
+    });
+
+    playBtn.addEventListener('click', () => {
+      videoEl.play().catch(e => log(e));
+    });
+
+    connectBtn.addEventListener('click', connect);
+
+    initPeer();
+  </script>
+</body>
+</html>
