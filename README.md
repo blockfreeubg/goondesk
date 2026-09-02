@@ -25,5 +25,5 @@ make a system that auto generates a key for someone to use
 
 # credits
 
-me - duderucool
-deepseek (expert)
+- me - duderucool
+- deepseek (expert)
