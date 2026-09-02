@@ -22,3 +22,8 @@ open viewer.html
 ## MAKE SURE THEY HAVE THE SAME KEY
 # what i would do
 make a system that auto generates a key for someone to use
+
+# credits
+
+me - duderucool
+deepseek (expert)
