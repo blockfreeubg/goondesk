@@ -1,5 +1,7 @@
 import asyncio
 import json
+import threading
+import queue
 import websockets as ws_library
 
 try:
@@ -81,6 +83,30 @@ def perform_key_up(key):
     else:
         pyautogui.keyUp(mapped, _pause=False)
 
+# Command queue for non‑blocking processing
+command_queue = queue.Queue()
+
+def process_commands():
+    while True:
+        data = command_queue.get()
+        if data is None:
+            break
+        msg_type = data.get('type')
+        if msg_type == 'mousemove':
+            perform_mouse_move(data.get('dx', 0), data.get('dy', 0))
+        elif msg_type == 'mousedown':
+            perform_mouse_down(data.get('button', 0))
+        elif msg_type == 'mouseup':
+            perform_mouse_up(data.get('button', 0))
+        elif msg_type == 'keydown':
+            perform_key_down(data.get('key', ''))
+        elif msg_type == 'keyup':
+            perform_key_up(data.get('key', ''))
+
+# Start the processing thread
+worker_thread = threading.Thread(target=process_commands, daemon=True)
+worker_thread.start()
+
 async def handler(websocket):
     print("Client connected")
     try:
@@ -89,30 +115,18 @@ async def handler(websocket):
                 data = json.loads(message)
             except json.JSONDecodeError:
                 continue
-
-            msg_type = data.get('type')
-
-            if msg_type == 'mousemove':
-                perform_mouse_move(data.get('dx', 0), data.get('dy', 0))
-            elif msg_type == 'mousedown':
-                perform_mouse_down(data.get('button', 0))
-            elif msg_type == 'mouseup':
-                perform_mouse_up(data.get('button', 0))
-            elif msg_type == 'keydown':
-                perform_key_down(data.get('key', ''))
-            elif msg_type == 'keyup':
-                perform_key_up(data.get('key', ''))
+            command_queue.put(data)
     except Exception as e:
         print(f"Client disconnected: {e}")
 
 async def main():
     PORT = 8765
-    print(f"Starting input server on ws://localhost:{PORT}")
+    print(f"Starting ultra‑optimized input server on ws://localhost:{PORT}")
     if USE_DIRECTINPUT:
         print("Using pydirectinput for Windows DirectX input (best for games)")
     else:
         print("Using pyautogui (cross-platform)")
-    
+
     async with ws_library.serve(handler, "localhost", PORT):
         await asyncio.Future()
 
