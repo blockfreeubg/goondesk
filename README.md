@@ -1,6 +1,6 @@
 # how to use for devs
 
-change the "peer key" to your desired key, each person gets a key, for example
+change the "my-stream-key" to your desired key, each person gets a key, for example
 
 jimmy uses the key 123
 timmy uses the key 123
