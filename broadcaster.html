@@ -13,9 +13,7 @@
 
   <script src="https://unpkg.com/peerjs@1.5.1/dist/peerjs.min.js"></script>
   <script>
-    // Peer ID from URL parameter, default 'my-stream-key'
     const PEER_ID = new URLSearchParams(location.search).get('id') || 'my-stream-key';
-    // Resolution overrides: ?width=1920&height=1080
     const params = new URLSearchParams(location.search);
     const captureWidth = parseInt(params.get('width')) || 1920;
     const captureHeight = parseInt(params.get('height')) || 1080;
@@ -32,9 +30,9 @@
     let activeCalls = [];
     let localVideoElement = null;
     let freezeCheckInterval = null;
-    let lastStatsTimestamp = 0;
     let lastFramesSent = 0;
-    let lastBytesSent = 0;
+    let lastStatsTime = 0;
+    let freezeCount = 0; // Consecutive freeze detections
 
     function connectWebSocket() {
       ws = new WebSocket('ws://localhost:8765');
@@ -65,9 +63,10 @@
       }
     }
 
-    // Check WebRTC outbound video stats to detect freeze
+    // Freeze detection using WebRTC stats (runs every 1s)
     async function checkVideoStats() {
       if (!peer || activeCalls.length === 0) return;
+
       for (const call of activeCalls) {
         try {
           const stats = await call.peerConnection.getStats();
@@ -78,34 +77,41 @@
             }
           });
           if (!outboundVideo) continue;
+
           const framesSent = outboundVideo.framesSent || 0;
-          const bytesSent = outboundVideo.bytesSent || 0;
           const now = performance.now();
-          if (lastStatsTimestamp === 0) {
-            lastStatsTimestamp = now;
+
+          if (lastStatsTime === 0) {
+            lastStatsTime = now;
             lastFramesSent = framesSent;
-            lastBytesSent = bytesSent;
             continue;
           }
-          const timeDelta = now - lastStatsTimestamp;
-          if (timeDelta < 2000) continue; // check every 2s
+
+          const timeDelta = now - lastStatsTime;
           const framesDelta = framesSent - lastFramesSent;
-          const bytesDelta = bytesSent - lastBytesSent;
-          // If no frames sent and no bytes sent for 3 seconds, frozen
-          if (framesDelta === 0 && bytesDelta === 0 && timeDelta > 3000) {
-            log('❄️ Freeze detected via stats. Re‑sharing...');
-            statusEl.textContent = 'Freeze detected. Re‑sharing...';
-            await startScreenShare();
-            const newTrack = localStream.getVideoTracks()[0];
-            await replaceTrackForAllCalls(newTrack);
-            statusEl.textContent = 'Screen capture restored.';
+
+          // If no new frames for more than 1.5 seconds, mark as potential freeze
+          if (framesDelta === 0 && timeDelta > 1500) {
+            freezeCount++;
+            if (freezeCount >= 2) { // Two consecutive checks -> freeze confirmed
+              log('❄️ Freeze confirmed. Re‑sharing...');
+              statusEl.textContent = 'Freeze detected. Re‑sharing...';
+              await startScreenShare();
+              const newTrack = localStream.getVideoTracks()[0];
+              await replaceTrackForAllCalls(newTrack);
+              statusEl.textContent = 'Screen capture restored.';
+              freezeCount = 0;
+              lastStatsTime = 0; // Reset stats after re-share
+              return;
+            }
+          } else {
+            freezeCount = 0;
           }
-          // Update baseline every check
-          lastStatsTimestamp = now;
+
+          lastStatsTime = now;
           lastFramesSent = framesSent;
-          lastBytesSent = bytesSent;
         } catch (err) {
-          log('Stats error: ' + err.message);
+          // Ignore errors
         }
       }
     }
@@ -119,10 +125,9 @@
           clearInterval(freezeCheckInterval);
           freezeCheckInterval = null;
         }
-        // Reset stats baselines
-        lastStatsTimestamp = 0;
+        lastStatsTime = 0;
         lastFramesSent = 0;
-        lastBytesSent = 0;
+        freezeCount = 0;
 
         localStream = await navigator.mediaDevices.getDisplayMedia({
           video: {
@@ -135,7 +140,8 @@
 
         const videoTrack = localStream.getVideoTracks()[0];
         if (videoTrack) {
-          videoTrack.contentHint = 'detail'; // sharp image
+          // 'motion' is best for low latency; high bitrate will keep it sharp
+          videoTrack.contentHint = 'motion';
           log('Video track settings: ' + JSON.stringify(videoTrack.getSettings()));
 
           videoTrack.onended = async () => {
@@ -148,7 +154,7 @@
           };
         }
 
-        // Update local preview
+        // Local preview
         previewContainer.innerHTML = '';
         localVideoElement = document.createElement('video');
         localVideoElement.srcObject = localStream;
@@ -158,8 +164,8 @@
         localVideoElement.style.width = '300px';
         previewContainer.appendChild(localVideoElement);
 
-        // Start freeze detection using WebRTC stats (every 2 seconds)
-        freezeCheckInterval = setInterval(checkVideoStats, 2000);
+        // Start freeze detection every 1 second
+        freezeCheckInterval = setInterval(checkVideoStats, 1000);
 
         statusEl.textContent = 'Screen captured. Initializing peer...';
         reshareBtn.style.display = 'inline-block';
@@ -223,15 +229,15 @@
           log('Media call error: ' + err.message);
         });
 
-        // Set high bitrate after connection
+        // Set high bitrate
         call.peerConnection.addEventListener('connectionstatechange', () => {
           if (call.peerConnection.connectionState === 'connected') {
             const sender = call.peerConnection.getSenders().find(s => s.track === videoTrack);
             if (sender) {
               const params = sender.getParameters();
               if (!params.encodings) params.encodings = [{}];
-              params.encodings[0].maxBitrate = 25000000; // 25 Mbps
-              params.encodings[0].minBitrate = 8000000;  // 8 Mbps
+              params.encodings[0].maxBitrate = 25000000;
+              params.encodings[0].minBitrate = 8000000;
               params.encodings[0].networkPriority = 'high';
               sender.setParameters(params).catch(err => log('Could not set bitrate: ' + err));
               log('Bitrate set to high');
@@ -240,7 +246,7 @@
         });
       });
 
-      // Data connection for remote control (unreliable)
+      // Data connection (unreliable)
       peer.on('connection', (conn) => {
         log('🔗 Data connection established from viewer');
         statusEl.textContent = 'Viewer connected (remote control ready)';
