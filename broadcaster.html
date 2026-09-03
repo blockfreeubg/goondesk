@@ -13,11 +13,12 @@
 
   <script src="https://unpkg.com/peerjs@1.5.1/dist/peerjs.min.js"></script>
   <script>
-    const PEER_ID = new URLSearchParams(location.search).get('id') || 'peer key (CHANGE THIS)';
-    // Optional resolution overrides: ?width=1920&height=1080
+    // Peer ID from URL parameter, default 'my-stream-key'
+    const PEER_ID = new URLSearchParams(location.search).get('id') || 'my-stream-key';
+    // Resolution overrides: ?width=1920&height=1080
     const params = new URLSearchParams(location.search);
-    const captureWidth = parseInt(params.get('width')) || 1280;
-    const captureHeight = parseInt(params.get('height')) || 720;
+    const captureWidth = parseInt(params.get('width')) || 1920;
+    const captureHeight = parseInt(params.get('height')) || 1080;
     const captureFps = parseInt(params.get('fps')) || 60;
 
     const statusEl = document.getElementById('status');
@@ -29,9 +30,11 @@
     let peer = null;
     let ws = null;
     let activeCalls = [];
-    let localVideoElement = null; // for freeze detection
-    let lastFrameTime = 0;
+    let localVideoElement = null;
     let freezeCheckInterval = null;
+    let lastStatsTimestamp = 0;
+    let lastFramesSent = 0;
+    let lastBytesSent = 0;
 
     function connectWebSocket() {
       ws = new WebSocket('ws://localhost:8765');
@@ -48,7 +51,6 @@
       console.log('[Broadcaster]', msg);
     }
 
-    // Replace video track on all active calls
     async function replaceTrackForAllCalls(newTrack) {
       for (const call of activeCalls) {
         try {
@@ -63,9 +65,53 @@
       }
     }
 
+    // Check WebRTC outbound video stats to detect freeze
+    async function checkVideoStats() {
+      if (!peer || activeCalls.length === 0) return;
+      for (const call of activeCalls) {
+        try {
+          const stats = await call.peerConnection.getStats();
+          let outboundVideo = null;
+          stats.forEach(report => {
+            if (report.type === 'outbound-rtp' && report.kind === 'video') {
+              outboundVideo = report;
+            }
+          });
+          if (!outboundVideo) continue;
+          const framesSent = outboundVideo.framesSent || 0;
+          const bytesSent = outboundVideo.bytesSent || 0;
+          const now = performance.now();
+          if (lastStatsTimestamp === 0) {
+            lastStatsTimestamp = now;
+            lastFramesSent = framesSent;
+            lastBytesSent = bytesSent;
+            continue;
+          }
+          const timeDelta = now - lastStatsTimestamp;
+          if (timeDelta < 2000) continue; // check every 2s
+          const framesDelta = framesSent - lastFramesSent;
+          const bytesDelta = bytesSent - lastBytesSent;
+          // If no frames sent and no bytes sent for 3 seconds, frozen
+          if (framesDelta === 0 && bytesDelta === 0 && timeDelta > 3000) {
+            log('❄️ Freeze detected via stats. Re‑sharing...');
+            statusEl.textContent = 'Freeze detected. Re‑sharing...';
+            await startScreenShare();
+            const newTrack = localStream.getVideoTracks()[0];
+            await replaceTrackForAllCalls(newTrack);
+            statusEl.textContent = 'Screen capture restored.';
+          }
+          // Update baseline every check
+          lastStatsTimestamp = now;
+          lastFramesSent = framesSent;
+          lastBytesSent = bytesSent;
+        } catch (err) {
+          log('Stats error: ' + err.message);
+        }
+      }
+    }
+
     async function startScreenShare() {
       try {
-        // Stop any existing stream and clear freeze check
         if (localStream) {
           localStream.getTracks().forEach(track => track.stop());
         }
@@ -73,6 +119,10 @@
           clearInterval(freezeCheckInterval);
           freezeCheckInterval = null;
         }
+        // Reset stats baselines
+        lastStatsTimestamp = 0;
+        lastFramesSent = 0;
+        lastBytesSent = 0;
 
         localStream = await navigator.mediaDevices.getDisplayMedia({
           video: {
@@ -85,10 +135,9 @@
 
         const videoTrack = localStream.getVideoTracks()[0];
         if (videoTrack) {
-          videoTrack.contentHint = 'motion'; // motion is good for low latency
+          videoTrack.contentHint = 'detail'; // sharp image
           log('Video track settings: ' + JSON.stringify(videoTrack.getSettings()));
 
-          // Auto‑restart if track ends (e.g., display mode change)
           videoTrack.onended = async () => {
             log('⚠️ Screen capture track ended. Restarting...');
             statusEl.textContent = 'Screen capture lost. Reconnecting...';
@@ -109,37 +158,8 @@
         localVideoElement.style.width = '300px';
         previewContainer.appendChild(localVideoElement);
 
-        // Start freeze watchdog
-        lastFrameTime = performance.now();
-        if ('requestVideoFrameCallback' in HTMLVideoElement.prototype) {
-          const onFrame = (now, metadata) => {
-            lastFrameTime = now;
-            localVideoElement.requestVideoFrameCallback(onFrame);
-          };
-          localVideoElement.requestVideoFrameCallback(onFrame);
-        } else {
-          // Fallback: use timeupdate event
-          localVideoElement.addEventListener('timeupdate', () => {
-            lastFrameTime = performance.now();
-          });
-        }
-
-        // Check every 2 seconds if frames are still coming
-        freezeCheckInterval = setInterval(() => {
-          const now = performance.now();
-          // If no new frame for 4 seconds, consider it frozen
-          if (now - lastFrameTime > 4000) {
-            log('❄️ Freeze detected. Re‑sharing screen...');
-            statusEl.textContent = 'Freeze detected. Re‑sharing...';
-            startScreenShare().then(() => {
-              replaceTrackForAllCalls(localStream.getVideoTracks()[0]);
-              statusEl.textContent = 'Screen capture restored.';
-            }).catch(err => {
-              log('Re‑share failed: ' + err.message);
-              statusEl.textContent = 'Re‑share failed. Try manual button.';
-            });
-          }
-        }, 2000);
+        // Start freeze detection using WebRTC stats (every 2 seconds)
+        freezeCheckInterval = setInterval(checkVideoStats, 2000);
 
         statusEl.textContent = 'Screen captured. Initializing peer...';
         reshareBtn.style.display = 'inline-block';
@@ -165,6 +185,7 @@
         config: {
           iceServers: [
             { urls: 'stun:stun.l.google.com:19302' },
+            { urls: 'stun:stun1.l.google.com:19302' },
             { urls: 'turn:openrelay.metered.ca:80', username: 'openrelayproject', credential: 'openrelayproject' },
             { urls: 'turn:openrelay.metered.ca:443', username: 'openrelayproject', credential: 'openrelayproject' }
           ],
@@ -209,8 +230,8 @@
             if (sender) {
               const params = sender.getParameters();
               if (!params.encodings) params.encodings = [{}];
-              params.encodings[0].maxBitrate = 15000000; // 15 Mbps
-              params.encodings[0].minBitrate = 3000000;  // 3 Mbps
+              params.encodings[0].maxBitrate = 25000000; // 25 Mbps
+              params.encodings[0].minBitrate = 8000000;  // 8 Mbps
               params.encodings[0].networkPriority = 'high';
               sender.setParameters(params).catch(err => log('Could not set bitrate: ' + err));
               log('Bitrate set to high');
@@ -225,7 +246,6 @@
         statusEl.textContent = 'Viewer connected (remote control ready)';
 
         conn.on('data', (data) => {
-          // No need to log every event for performance
           if (ws && ws.readyState === WebSocket.OPEN) {
             ws.send(JSON.stringify(data));
           } else {
