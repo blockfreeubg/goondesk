@@ -188,9 +188,7 @@
           statusEl.textContent = 'Click ▶ Play to start';
         });
 
-        if ('playoutDelayHint' in videoEl) {
-          videoEl.playoutDelayHint = 0;
-        }
+        // Removed playoutDelayHint for compatibility
       });
 
       call.on('close', () => {
@@ -259,7 +257,7 @@
       log('Remote control enabled');
 
       if (sendInterval) clearInterval(sendInterval);
-      sendInterval = setInterval(sendAccumulatedMouse, 8);  // 125 Hz
+      sendInterval = setInterval(sendAccumulatedMouse, 16);  // 60 Hz
     });
 
     videoEl.addEventListener('click', () => {
