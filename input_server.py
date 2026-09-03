@@ -1,63 +1,36 @@
 import asyncio
 import json
-import platform
-import sys
+import websockets as ws_library
 
-# Try to import pydirectinput for Windows gaming performance
 try:
     import pydirectinput
     USE_DIRECTINPUT = True
 except ImportError:
-    pydirectinput = None
     USE_DIRECTINPUT = False
 
-# Fallback to pyautogui
 import pyautogui
 
-# Disable pyautogui's internal pause (we want zero delay)
 pyautogui.PAUSE = 0
-pyautogui.FAILSAFE = False  # allow moving to screen corners
+pyautogui.FAILSAFE = False
 
-# Optional: use pyautogui's fail-safe? Disabled for gaming.
-
-# ----------------------------------------------------------------------
-# Key mapping for special keys (same for both libraries)
-# ----------------------------------------------------------------------
 KEY_MAP = {
-    'ArrowUp': 'up',
-    'ArrowDown': 'down',
-    'ArrowLeft': 'left',
-    'ArrowRight': 'right',
-    'Enter': 'enter',
-    'Backspace': 'backspace',
-    'Tab': 'tab',
-    'Shift': 'shift',
-    'Control': 'ctrl',
-    'Alt': 'alt',
-    'Escape': 'esc',
-    ' ': 'space',
-    'CapsLock': 'capslock',
-    'PageUp': 'pageup',
-    'PageDown': 'pagedown',
-    'Home': 'home',
-    'End': 'end',
-    'Insert': 'insert',
-    'Delete': 'delete',
+    'ArrowUp': 'up', 'ArrowDown': 'down', 'ArrowLeft': 'left', 'ArrowRight': 'right',
+    'Enter': 'enter', 'Backspace': 'backspace', 'Tab': 'tab',
+    'Shift': 'shift', 'Control': 'ctrl', 'Alt': 'alt',
+    'Escape': 'esc', ' ': 'space',
+    'CapsLock': 'capslock', 'PageUp': 'pageup', 'PageDown': 'pagedown',
+    'Home': 'home', 'End': 'end', 'Insert': 'insert', 'Delete': 'delete',
     'F1': 'f1', 'F2': 'f2', 'F3': 'f3', 'F4': 'f4',
     'F5': 'f5', 'F6': 'f6', 'F7': 'f7', 'F8': 'f8',
     'F9': 'f9', 'F10': 'f10', 'F11': 'f11', 'F12': 'f12',
-    'Meta': 'win',  # Windows key
-    'Win': 'win',
+    'Meta': 'win', 'Win': 'win',
 }
 
 def map_key(key):
-    """Map a JavaScript key name to a library-specific key name."""
     return KEY_MAP.get(key, key)
 
 def perform_mouse_move(dx, dy):
-    """Move mouse relatively with zero delay."""
     if USE_DIRECTINPUT:
-        # pydirectinput.moveRel is more reliable for games
         pydirectinput.moveRel(dx, dy, relative=True, duration=0)
     else:
         pyautogui.moveRel(dx, dy, duration=0, _pause=False)
@@ -108,9 +81,6 @@ def perform_key_up(key):
     else:
         pyautogui.keyUp(mapped, _pause=False)
 
-# ----------------------------------------------------------------------
-# WebSocket handler
-# ----------------------------------------------------------------------
 async def handler(websocket):
     print("Client connected")
     try:
@@ -118,54 +88,33 @@ async def handler(websocket):
             try:
                 data = json.loads(message)
             except json.JSONDecodeError:
-                print("Invalid JSON received")
                 continue
 
             msg_type = data.get('type')
-            # Optional: logging for debugging (disable for max speed)
-            # print(f"Received: {msg_type}")
 
             if msg_type == 'mousemove':
-                dx = data.get('dx', 0)
-                dy = data.get('dy', 0)
-                # Apply a sensitivity multiplier if desired (1.0 = default)
-                # dx *= 1.0
-                # dy *= 1.0
-                perform_mouse_move(dx, dy)
-
+                perform_mouse_move(data.get('dx', 0), data.get('dy', 0))
             elif msg_type == 'mousedown':
-                button = data.get('button', 0)
-                perform_mouse_down(button)
-
+                perform_mouse_down(data.get('button', 0))
             elif msg_type == 'mouseup':
-                button = data.get('button', 0)
-                perform_mouse_up(button)
-
+                perform_mouse_up(data.get('button', 0))
             elif msg_type == 'keydown':
-                key = data.get('key', '')
-                perform_key_down(key)
-
+                perform_key_down(data.get('key', ''))
             elif msg_type == 'keyup':
-                key = data.get('key', '')
-                perform_key_up(key)
-
-            else:
-                print(f"Unknown command: {msg_type}")
-
-    except websockets.exceptions.ConnectionClosed:
-        print("Client disconnected")
+                perform_key_up(data.get('key', ''))
     except Exception as e:
-        print(f"Handler error: {e}")
+        print(f"Client disconnected: {e}")
 
 async def main():
-    port = 8765
-    print(f"Starting ultra‑optimized input server on ws://localhost:{port}")
+    PORT = 8765
+    print(f"Starting input server on ws://localhost:{PORT}")
     if USE_DIRECTINPUT:
         print("Using pydirectinput for Windows DirectX input (best for games)")
     else:
-        print("Using pyautogui (cross‑platform)")
-    async with websockets.serve(handler, "localhost", port):
-        await asyncio.Future()  # run forever
+        print("Using pyautogui (cross-platform)")
+    
+    async with ws_library.serve(handler, "localhost", PORT):
+        await asyncio.Future()
 
 if __name__ == "__main__":
     asyncio.run(main())
