@@ -15,8 +15,8 @@
   <script>
     const PEER_ID = new URLSearchParams(location.search).get('id') || 'my-stream-key';
     const params = new URLSearchParams(location.search);
-    const captureWidth = parseInt(params.get('width')) || 1920;
-    const captureHeight = parseInt(params.get('height')) || 1080;
+    const captureWidth = parseInt(params.get('width')) || 1280;   // Default 720p for balance
+    const captureHeight = parseInt(params.get('height')) || 720;
     const captureFps = parseInt(params.get('fps')) || 60;
 
     const statusEl = document.getElementById('status');
@@ -32,7 +32,7 @@
     let freezeCheckInterval = null;
     let lastFramesSent = 0;
     let lastStatsTime = 0;
-    let freezeCount = 0; // Consecutive freeze detections
+    let freezeCount = 0;
 
     function connectWebSocket() {
       ws = new WebSocket('ws://localhost:8765');
@@ -63,7 +63,6 @@
       }
     }
 
-    // Freeze detection using WebRTC stats (runs every 1s)
     async function checkVideoStats() {
       if (!peer || activeCalls.length === 0) return;
 
@@ -90,10 +89,9 @@
           const timeDelta = now - lastStatsTime;
           const framesDelta = framesSent - lastFramesSent;
 
-          // If no new frames for more than 1.5 seconds, mark as potential freeze
           if (framesDelta === 0 && timeDelta > 1500) {
             freezeCount++;
-            if (freezeCount >= 2) { // Two consecutive checks -> freeze confirmed
+            if (freezeCount >= 2) {
               log('❄️ Freeze confirmed. Re‑sharing...');
               statusEl.textContent = 'Freeze detected. Re‑sharing...';
               await startScreenShare();
@@ -101,7 +99,7 @@
               await replaceTrackForAllCalls(newTrack);
               statusEl.textContent = 'Screen capture restored.';
               freezeCount = 0;
-              lastStatsTime = 0; // Reset stats after re-share
+              lastStatsTime = 0;
               return;
             }
           } else {
@@ -140,7 +138,6 @@
 
         const videoTrack = localStream.getVideoTracks()[0];
         if (videoTrack) {
-          // 'motion' is best for low latency; high bitrate will keep it sharp
           videoTrack.contentHint = 'motion';
           log('Video track settings: ' + JSON.stringify(videoTrack.getSettings()));
 
@@ -154,7 +151,6 @@
           };
         }
 
-        // Local preview
         previewContainer.innerHTML = '';
         localVideoElement = document.createElement('video');
         localVideoElement.srcObject = localStream;
@@ -164,7 +160,6 @@
         localVideoElement.style.width = '300px';
         previewContainer.appendChild(localVideoElement);
 
-        // Start freeze detection every 1 second
         freezeCheckInterval = setInterval(checkVideoStats, 1000);
 
         statusEl.textContent = 'Screen captured. Initializing peer...';
@@ -229,24 +224,23 @@
           log('Media call error: ' + err.message);
         });
 
-        // Set high bitrate
         call.peerConnection.addEventListener('connectionstatechange', () => {
           if (call.peerConnection.connectionState === 'connected') {
             const sender = call.peerConnection.getSenders().find(s => s.track === videoTrack);
             if (sender) {
               const params = sender.getParameters();
               if (!params.encodings) params.encodings = [{}];
-              params.encodings[0].maxBitrate = 25000000;
-              params.encodings[0].minBitrate = 8000000;
+              params.encodings[0].maxBitrate = 15000000;   // 15 Mbps
+              params.encodings[0].minBitrate = 5000000;    // 5 Mbps
               params.encodings[0].networkPriority = 'high';
+              params.encodings[0].degradationPreference = 'maintain-resolution';
               sender.setParameters(params).catch(err => log('Could not set bitrate: ' + err));
-              log('Bitrate set to high');
+              log('Bitrate set to high with resolution maintenance');
             }
           }
         });
       });
 
-      // Data connection (unreliable)
       peer.on('connection', (conn) => {
         log('🔗 Data connection established from viewer');
         statusEl.textContent = 'Viewer connected (remote control ready)';
