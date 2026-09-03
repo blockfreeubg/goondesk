@@ -15,7 +15,7 @@
   <script>
     const PEER_ID = new URLSearchParams(location.search).get('id') || 'my-stream-key';
     const params = new URLSearchParams(location.search);
-    const captureWidth = parseInt(params.get('width')) || 1280;   // Fixed 720p
+    const captureWidth = parseInt(params.get('width')) || 1280;
     const captureHeight = parseInt(params.get('height')) || 720;
     const captureFps = parseInt(params.get('fps')) || 60;
 
@@ -127,19 +127,18 @@
         lastFramesSent = 0;
         freezeCount = 0;
 
-        // Force exact resolution and frame rate
+        // Use ideal constraints (exact not supported)
         localStream = await navigator.mediaDevices.getDisplayMedia({
           video: {
-            width: { exact: captureWidth },
-            height: { exact: captureHeight },
-            frameRate: { exact: captureFps }
+            width: { ideal: captureWidth },
+            height: { ideal: captureHeight },
+            frameRate: { ideal: captureFps, max: 120 }
           },
           audio: false
         });
 
         const videoTrack = localStream.getVideoTracks()[0];
         if (videoTrack) {
-          // Use 'detail' for sharp image
           videoTrack.contentHint = 'detail';
           log('Video track settings: ' + JSON.stringify(videoTrack.getSettings()));
 
