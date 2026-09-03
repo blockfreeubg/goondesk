@@ -127,7 +127,6 @@
         lastFramesSent = 0;
         freezeCount = 0;
 
-        // Use ideal constraints (exact not supported)
         localStream = await navigator.mediaDevices.getDisplayMedia({
           video: {
             width: { ideal: captureWidth },
