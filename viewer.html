@@ -82,10 +82,22 @@
       border-radius: 4px;
       pointer-events: none;
     }
+    #networkStats {
+      position: fixed;
+      top: 10px;
+      right: 10px;
+      z-index: 20;
+      color: white;
+      background: rgba(0,0,0,0.6);
+      padding: 5px 10px;
+      border-radius: 4px;
+      font-size: 14px;
+    }
   </style>
 </head>
 <body>
   <div id="toggleControlsBtn">☰ Controls</div>
+  <div id="networkStats">RTT: -- ms</div>
 
   <div id="videoContainer">
     <video id="remoteVideo" autoplay playsinline muted></video>
@@ -111,6 +123,7 @@
     const fullscreenBtn = document.getElementById('fullscreenBtn');
     const toggleControlsBtn = document.getElementById('toggleControlsBtn');
     const controlPanel = document.getElementById('controlPanel');
+    const networkStatsEl = document.getElementById('networkStats');
 
     let peer = null;
     let call = null;
@@ -122,6 +135,9 @@
     let accumulatedDX = 0;
     let accumulatedDY = 0;
     let sendInterval = null;
+
+    // For RTT calculation
+    let statsInterval = null;
 
     toggleControlsBtn.addEventListener('click', () => {
       controlPanel.classList.toggle('active');
@@ -187,6 +203,7 @@
           log('Autoplay failed: ' + err.message);
           statusEl.textContent = 'Click ▶ Play to start';
         });
+        startStatsCollection();
       });
 
       call.on('close', () => {
@@ -194,6 +211,7 @@
         statusEl.textContent = 'Connection closed';
         isControlling = false;
         if (sendInterval) clearInterval(sendInterval);
+        if (statsInterval) clearInterval(statsInterval);
       });
 
       call.on('error', (err) => {
@@ -227,6 +245,27 @@
       });
     }
 
+    function startStatsCollection() {
+      if (statsInterval) clearInterval(statsInterval);
+      statsInterval = setInterval(async () => {
+        if (!call || !call.peerConnection) return;
+        try {
+          const stats = await call.peerConnection.getStats();
+          let rtt = null;
+          stats.forEach(report => {
+            if (report.type === 'candidate-pair' && report.state === 'succeeded' && report.nominated) {
+              rtt = report.currentRoundTripTime;
+            }
+          });
+          if (rtt !== null) {
+            networkStatsEl.textContent = `RTT: ${Math.round(rtt * 1000)} ms`;
+          }
+        } catch (e) {
+          // ignore
+        }
+      }, 1000);
+    }
+
     function sendAccumulatedMouse() {
       if (!isControlling || !pointerLocked) return;
       if (accumulatedDX === 0 && accumulatedDY === 0) return;
@@ -254,9 +293,9 @@
       statusEl.textContent = 'Remote control ACTIVE – click video to lock mouse';
       log('Remote control enabled');
 
-      // Send at 60Hz for smoothness (optimal)
+      // Send at 30Hz for smoothness and lower bandwidth
       if (sendInterval) clearInterval(sendInterval);
-      sendInterval = setInterval(sendAccumulatedMouse, 16);  // 60 Hz
+      sendInterval = setInterval(sendAccumulatedMouse, 33);  // 30 Hz
     });
 
     videoEl.addEventListener('click', () => {
