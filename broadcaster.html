@@ -7,16 +7,31 @@
 <body>
   <h1>🖥️ PC Stream Broadcaster</h1>
   <button id="startBtn">Start Sharing Screen</button>
+  <button id="reshareBtn" style="display:none;">🔄 Re‑share Screen</button>
   <p>Status: <span id="status">idle</span></p>
   <div id="previewContainer"></div>
 
   <script src="https://unpkg.com/peerjs@1.5.1/dist/peerjs.min.js"></script>
   <script>
-    const PEER_ID = new URLSearchParams(location.search).get('id') || 'peer key (CHANGE THIS)';
+    const PEER_ID = new URLSearchParams(location.search).get('id') || 'duderucoolpc123';
+    // Optional resolution overrides: ?width=1920&height=1080
+    const params = new URLSearchParams(location.search);
+    const captureWidth = parseInt(params.get('width')) || 1280;
+    const captureHeight = parseInt(params.get('height')) || 720;
+    const captureFps = parseInt(params.get('fps')) || 60;
+
     const statusEl = document.getElementById('status');
+    const startBtn = document.getElementById('startBtn');
+    const reshareBtn = document.getElementById('reshareBtn');
+    const previewContainer = document.getElementById('previewContainer');
+
     let localStream = null;
     let peer = null;
     let ws = null;
+    let activeCalls = [];
+    let localVideoElement = null; // for freeze detection
+    let lastFrameTime = 0;
+    let freezeCheckInterval = null;
 
     function connectWebSocket() {
       ws = new WebSocket('ws://localhost:8765');
@@ -33,54 +48,127 @@
       console.log('[Broadcaster]', msg);
     }
 
-    document.getElementById('startBtn').addEventListener('click', async () => {
+    // Replace video track on all active calls
+    async function replaceTrackForAllCalls(newTrack) {
+      for (const call of activeCalls) {
+        try {
+          const sender = call.peerConnection.getSenders().find(s => s.track && s.track.kind === 'video');
+          if (sender) {
+            await sender.replaceTrack(newTrack);
+            log('Replaced track for a call');
+          }
+        } catch (err) {
+          log('Failed to replace track: ' + err.message);
+        }
+      }
+    }
+
+    async function startScreenShare() {
       try {
-        // Request high resolution and frame rate
+        // Stop any existing stream and clear freeze check
+        if (localStream) {
+          localStream.getTracks().forEach(track => track.stop());
+        }
+        if (freezeCheckInterval) {
+          clearInterval(freezeCheckInterval);
+          freezeCheckInterval = null;
+        }
+
         localStream = await navigator.mediaDevices.getDisplayMedia({
           video: {
-            width: { ideal: 1920, max: 3840 },
-            height: { ideal: 1080, max: 2160 },
-            frameRate: { ideal: 60, max: 120 }
+            width: { ideal: captureWidth },
+            height: { ideal: captureHeight },
+            frameRate: { ideal: captureFps, max: captureFps }
           },
           audio: false
         });
 
         const videoTrack = localStream.getVideoTracks()[0];
         if (videoTrack) {
-          // Use 'detail' to prioritize sharpness over motion smoothness (fixes 144p)
-          videoTrack.contentHint = 'detail';
+          videoTrack.contentHint = 'motion'; // motion is good for low latency
           log('Video track settings: ' + JSON.stringify(videoTrack.getSettings()));
+
+          // Auto‑restart if track ends (e.g., display mode change)
+          videoTrack.onended = async () => {
+            log('⚠️ Screen capture track ended. Restarting...');
+            statusEl.textContent = 'Screen capture lost. Reconnecting...';
+            await startScreenShare();
+            const newTrack = localStream.getVideoTracks()[0];
+            await replaceTrackForAllCalls(newTrack);
+            statusEl.textContent = 'Screen capture restored.';
+          };
         }
 
-        log('Screen capture started');
-        log('Tracks: ' + localStream.getTracks().map(t => `${t.kind}:${t.readyState}`));
+        // Update local preview
+        previewContainer.innerHTML = '';
+        localVideoElement = document.createElement('video');
+        localVideoElement.srcObject = localStream;
+        localVideoElement.autoplay = true;
+        localVideoElement.muted = true;
+        localVideoElement.playsInline = true;
+        localVideoElement.style.width = '300px';
+        previewContainer.appendChild(localVideoElement);
 
-        const container = document.getElementById('previewContainer');
-        container.innerHTML = '';
-        const video = document.createElement('video');
-        video.srcObject = localStream;
-        video.autoplay = true;
-        video.muted = true;
-        video.playsInline = true;
-        video.style.width = '300px';
-        container.appendChild(video);
+        // Start freeze watchdog
+        lastFrameTime = performance.now();
+        if ('requestVideoFrameCallback' in HTMLVideoElement.prototype) {
+          const onFrame = (now, metadata) => {
+            lastFrameTime = now;
+            localVideoElement.requestVideoFrameCallback(onFrame);
+          };
+          localVideoElement.requestVideoFrameCallback(onFrame);
+        } else {
+          // Fallback: use timeupdate event
+          localVideoElement.addEventListener('timeupdate', () => {
+            lastFrameTime = performance.now();
+          });
+        }
+
+        // Check every 2 seconds if frames are still coming
+        freezeCheckInterval = setInterval(() => {
+          const now = performance.now();
+          // If no new frame for 4 seconds, consider it frozen
+          if (now - lastFrameTime > 4000) {
+            log('❄️ Freeze detected. Re‑sharing screen...');
+            statusEl.textContent = 'Freeze detected. Re‑sharing...';
+            startScreenShare().then(() => {
+              replaceTrackForAllCalls(localStream.getVideoTracks()[0]);
+              statusEl.textContent = 'Screen capture restored.';
+            }).catch(err => {
+              log('Re‑share failed: ' + err.message);
+              statusEl.textContent = 'Re‑share failed. Try manual button.';
+            });
+          }
+        }, 2000);
 
         statusEl.textContent = 'Screen captured. Initializing peer...';
+        reshareBtn.style.display = 'inline-block';
         initPeer();
       } catch (err) {
         log('Screen capture failed: ' + err.message);
         statusEl.textContent = 'Error: ' + err.message;
       }
+    }
+
+    startBtn.addEventListener('click', startScreenShare);
+    reshareBtn.addEventListener('click', async () => {
+      await startScreenShare();
+      await replaceTrackForAllCalls(localStream.getVideoTracks()[0]);
+      statusEl.textContent = 'Screen re‑shared.';
     });
 
     function initPeer() {
+      if (peer) {
+        peer.destroy();
+      }
       peer = new Peer(PEER_ID, {
         config: {
           iceServers: [
             { urls: 'stun:stun.l.google.com:19302' },
             { urls: 'turn:openrelay.metered.ca:80', username: 'openrelayproject', credential: 'openrelayproject' },
             { urls: 'turn:openrelay.metered.ca:443', username: 'openrelayproject', credential: 'openrelayproject' }
-          ]
+          ],
+          bundlePolicy: 'max-bundle'
         }
       });
 
@@ -102,44 +190,42 @@
         }
 
         call.answer(new MediaStream([videoTrack]));
-
-        // Modify SDP / set bitrate after answer
-        call.on('stream', () => {
-          // This event fires on the caller side; broadcaster doesn't get it.
-        });
-
-        // After answering, tweak sender parameters for higher bitrate
-        call.peerConnection.addEventListener('connectionstatechange', () => {
-          if (call.peerConnection.connectionState === 'connected') {
-            const sender = call.peerConnection.getSenders().find(s => s.track === videoTrack);
-            if (sender) {
-              const params = sender.getParameters();
-              if (!params.encodings) params.encodings = [{}];
-              params.encodings[0].maxBitrate = 10000000; // 10 Mbps
-              params.encodings[0].minBitrate = 2000000;  // 2 Mbps
-              params.encodings[0].networkPriority = 'high';
-              sender.setParameters(params).catch(err => log('Could not set bitrate: ' + err));
-              log('Bitrate parameters set');
-            }
-          }
-        });
+        activeCalls.push(call);
 
         call.on('close', () => {
+          const idx = activeCalls.indexOf(call);
+          if (idx > -1) activeCalls.splice(idx, 1);
           log('Viewer disconnected (media)');
           statusEl.textContent = 'Viewer disconnected';
         });
         call.on('error', (err) => {
           log('Media call error: ' + err.message);
         });
+
+        // Set high bitrate after connection
+        call.peerConnection.addEventListener('connectionstatechange', () => {
+          if (call.peerConnection.connectionState === 'connected') {
+            const sender = call.peerConnection.getSenders().find(s => s.track === videoTrack);
+            if (sender) {
+              const params = sender.getParameters();
+              if (!params.encodings) params.encodings = [{}];
+              params.encodings[0].maxBitrate = 15000000; // 15 Mbps
+              params.encodings[0].minBitrate = 3000000;  // 3 Mbps
+              params.encodings[0].networkPriority = 'high';
+              sender.setParameters(params).catch(err => log('Could not set bitrate: ' + err));
+              log('Bitrate set to high');
+            }
+          }
+        });
       });
 
-      // Data connection for remote control (unreliable to reduce latency)
+      // Data connection for remote control (unreliable)
       peer.on('connection', (conn) => {
         log('🔗 Data connection established from viewer');
         statusEl.textContent = 'Viewer connected (remote control ready)';
 
         conn.on('data', (data) => {
-          log('Received data: ' + JSON.stringify(data));
+          // No need to log every event for performance
           if (ws && ws.readyState === WebSocket.OPEN) {
             ws.send(JSON.stringify(data));
           } else {
