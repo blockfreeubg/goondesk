@@ -2,7 +2,7 @@
 <html>
 <head>
   <meta charset="UTF-8">
-  <title>PC Stream Viewer + Remote Control (Ultra Low Latency)</title>
+  <title>PC Stream Viewer + Remote Control (Responsive)</title>
   <style>
     html, body {
       margin: 0;
@@ -101,7 +101,7 @@
 
   <script src="https://unpkg.com/peerjs@1.5.1/dist/peerjs.min.js"></script>
   <script>
-    const PEER_ID = new URLSearchParams(location.search).get('id') || 'peer key (CHANGE THIS)';
+    const PEER_ID = new URLSearchParams(location.search).get('id') || 'my-stream-key';
     const statusEl = document.getElementById('status');
     const videoEl = document.getElementById('remoteVideo');
     const container = document.getElementById('videoContainer');
@@ -118,6 +118,11 @@
     let isControlling = false;
     let dataConnReady = false;
     let pointerLocked = false;
+
+    // For batched mouse movement
+    let accumulatedDX = 0;
+    let accumulatedDY = 0;
+    let sendInterval = null;
 
     toggleControlsBtn.addEventListener('click', () => {
       controlPanel.classList.toggle('active');
@@ -184,14 +189,8 @@
           statusEl.textContent = 'Click ▶ Play to start';
         });
 
-        // Ultra‑low latency settings
         if ('playoutDelayHint' in videoEl) {
-          videoEl.playoutDelayHint = 0; // minimum delay
-          log('Playout delay hint set to 0');
-        }
-        if ('latency' in videoEl) {
-          videoEl.latency = 'low'; // Safari only
-          log('Latency set to low');
+          videoEl.playoutDelayHint = 0;
         }
       });
 
@@ -199,6 +198,7 @@
         log('Media call closed');
         statusEl.textContent = 'Connection closed';
         isControlling = false;
+        if (sendInterval) clearInterval(sendInterval);
       });
 
       call.on('error', (err) => {
@@ -223,6 +223,7 @@
         log('Data connection closed');
         dataConnReady = false;
         isControlling = false;
+        if (sendInterval) clearInterval(sendInterval);
       });
 
       dataConn.on('error', (err) => {
@@ -231,7 +232,16 @@
       });
     }
 
-    // Remote control functions (unchanged from previous)
+    // --- Batched Mouse Movement ---
+    function sendAccumulatedMouse() {
+      if (!isControlling || !pointerLocked) return;
+      if (accumulatedDX === 0 && accumulatedDY === 0) return;
+
+      sendData({ type: 'mousemove', dx: accumulatedDX, dy: accumulatedDY });
+      accumulatedDX = 0;
+      accumulatedDY = 0;
+    }
+
     function sendData(data) {
       if (dataConn && dataConnReady) {
         dataConn.send(data);
@@ -249,6 +259,10 @@
       isControlling = true;
       statusEl.textContent = 'Remote control ACTIVE – click video to lock mouse';
       log('Remote control enabled');
+
+      // Start interval to send accumulated mouse moves at ~60Hz (every 16ms)
+      if (sendInterval) clearInterval(sendInterval);
+      sendInterval = setInterval(sendAccumulatedMouse, 16);
     });
 
     videoEl.addEventListener('click', () => {
@@ -267,14 +281,18 @@
         isControlling = false;
         statusEl.textContent = 'Remote control disabled';
         log('Remote control disabled');
+        if (sendInterval) clearInterval(sendInterval);
       }
     });
 
+    // Accumulate mouse deltas
     videoEl.addEventListener('mousemove', (e) => {
       if (!isControlling || !pointerLocked) return;
-      sendData({ type: 'mousemove', dx: e.movementX, dy: e.movementY });
+      accumulatedDX += e.movementX;
+      accumulatedDY += e.movementY;
     });
 
+    // Mouse buttons sent immediately
     videoEl.addEventListener('mousedown', (e) => {
       if (!isControlling || !pointerLocked) return;
       e.preventDefault();
@@ -289,6 +307,7 @@
       if (isControlling) e.preventDefault();
     });
 
+    // Keyboard sent immediately
     document.addEventListener('keydown', (e) => {
       if (!isControlling) return;
       e.preventDefault();
