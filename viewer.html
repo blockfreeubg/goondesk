@@ -187,8 +187,6 @@
           log('Autoplay failed: ' + err.message);
           statusEl.textContent = 'Click ▶ Play to start';
         });
-
-        // Removed playoutDelayHint for compatibility
       });
 
       call.on('close', () => {
@@ -203,8 +201,9 @@
         statusEl.textContent = 'Call error: ' + err.message;
       });
 
-      log('Connecting data channel (ordered, unreliable)...');
-      dataConn = peer.connect(PEER_ID, { reliable: false, ordered: true, maxRetransmits: 0 });
+      // ❗ Use unordered, unreliable for lowest latency (no head-of-line blocking)
+      log('Connecting data channel (unordered, unreliable)...');
+      dataConn = peer.connect(PEER_ID, { reliable: false, ordered: false, maxRetransmits: 0 });
 
       dataConn.on('open', () => {
         log('🔗 Data connection open');
@@ -256,8 +255,9 @@
       statusEl.textContent = 'Remote control ACTIVE – click video to lock mouse';
       log('Remote control enabled');
 
+      // Send at 125 Hz for smoother movement
       if (sendInterval) clearInterval(sendInterval);
-      sendInterval = setInterval(sendAccumulatedMouse, 16);  // 60 Hz
+      sendInterval = setInterval(sendAccumulatedMouse, 8);
     });
 
     videoEl.addEventListener('click', () => {
