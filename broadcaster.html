@@ -15,7 +15,7 @@
   <script>
     const PEER_ID = new URLSearchParams(location.search).get('id') || 'my-stream-key';
     const params = new URLSearchParams(location.search);
-    const captureWidth = parseInt(params.get('width')) || 1280;   // Default 720p for balance
+    const captureWidth = parseInt(params.get('width')) || 1280;   // Fixed 720p
     const captureHeight = parseInt(params.get('height')) || 720;
     const captureFps = parseInt(params.get('fps')) || 60;
 
@@ -127,18 +127,20 @@
         lastFramesSent = 0;
         freezeCount = 0;
 
+        // Force exact resolution and frame rate
         localStream = await navigator.mediaDevices.getDisplayMedia({
           video: {
-            width: { ideal: captureWidth },
-            height: { ideal: captureHeight },
-            frameRate: { ideal: captureFps, max: captureFps }
+            width: { exact: captureWidth },
+            height: { exact: captureHeight },
+            frameRate: { exact: captureFps }
           },
           audio: false
         });
 
         const videoTrack = localStream.getVideoTracks()[0];
         if (videoTrack) {
-          videoTrack.contentHint = 'motion';
+          // Use 'detail' for sharp image
+          videoTrack.contentHint = 'detail';
           log('Video track settings: ' + JSON.stringify(videoTrack.getSettings()));
 
           videoTrack.onended = async () => {
@@ -230,8 +232,8 @@
             if (sender) {
               const params = sender.getParameters();
               if (!params.encodings) params.encodings = [{}];
-              params.encodings[0].maxBitrate = 15000000;   // 15 Mbps
-              params.encodings[0].minBitrate = 5000000;    // 5 Mbps
+              params.encodings[0].maxBitrate = 20000000;   // 20 Mbps
+              params.encodings[0].minBitrate = 8000000;    // 8 Mbps
               params.encodings[0].networkPriority = 'high';
               params.encodings[0].degradationPreference = 'maintain-resolution';
               sender.setParameters(params).catch(err => log('Could not set bitrate: ' + err));
